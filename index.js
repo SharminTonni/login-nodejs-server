@@ -5,8 +5,7 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 5000;
-app.set("view engine", "ejs");
-// app.set("views", path.join(__dirname, "views"));
+
 const corsConfig = {
   origin: "*",
   credentials: true,
@@ -37,6 +36,7 @@ const client = new MongoClient(uri, {
 });
 
 const usersCollection = client.db("loginDB").collection("users");
+const postsCollection = client.db("loginDB").collection("posts");
 
 async function run() {
   try {
@@ -155,14 +155,72 @@ async function run() {
           }
         );
 
-        // res.render("index", {
-        //   email: userFinding?.email,
-        //   status: "verified",
-        // });
         res.send({ status: "password updated" });
       } catch (error) {
         res.send({ status: "password cannot be updated" });
       }
+    });
+
+    app.post("/posts", async (req, res) => {
+      const { text } = req.body;
+      const post = {
+        text,
+        likes: 0,
+        comments: [],
+      };
+      const result = await postsCollection.insertOne(post);
+      res.send(result);
+    });
+    app.put("/post/update/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const { text } = req.body;
+      const updatedPost = {
+        $set: {
+          text: text,
+        },
+      };
+
+      const result = await postsCollection.updateOne(query, updatedPost);
+      res.send(result);
+    });
+
+    app.delete("/post/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await postsCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    app.patch("/post/:id/like", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await postsCollection.updateOne(query, {
+        $inc: { likes: 1 },
+      });
+      res.send(result);
+    });
+
+    app.put("/post/:id/comment", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const { comment } = req.body;
+      const result = await postsCollection.updateOne(query, {
+        $push: { comments: comment },
+      });
+      res.send(result);
+    });
+
+    app.get("/allposts", async (req, res) => {
+      const result = await postsCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.get("/singlepost/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await postsCollection.findOne(query);
+      res.send(result);
     });
 
     // Send a ping to confirm a successful connection
