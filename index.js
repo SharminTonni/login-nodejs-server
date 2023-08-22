@@ -1,20 +1,51 @@
 const express = require("express");
 const app = express();
 const cors = require("cors");
-
+const jwt = require("jsonwebtoken");
+require("dotenv").config();
+const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 5000;
 
+const encryptionAlgorithm = "aes-256-cbc";
+const encryptionKey = process.env.KEY; // Replace with a secure secret key
+const iv = crypto.randomBytes(16);
+
+function encrypt(text) {
+  const cipher = crypto.createCipheriv(
+    encryptionAlgorithm,
+    Buffer.from(encryptionKey),
+    iv
+  );
+  let encrypted = cipher.update(text, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return `${iv.toString("hex")}:${encrypted}`;
+}
+
+function decrypt(encryptedText) {
+  const [ivText, encryptedData] = encryptedText.split(":");
+  const decipher = crypto.createDecipheriv(
+    encryptionAlgorithm,
+    Buffer.from(encryptionKey),
+    Buffer.from(ivText, "hex")
+  );
+  let decrypted = decipher.update(encryptedData, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
 const corsConfig = {
   origin: "*",
   credentials: true,
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   optionSuccessStatus: 200,
 };
 app.use(cors());
 app.options("", cors(corsConfig));
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// app.use(express.urlencoded({ extended: false }));
 
 app.get("/", (req, res) => {
   res.send("welcome");
@@ -38,14 +69,53 @@ const client = new MongoClient(uri, {
 const usersCollection = client.db("loginDB").collection("users");
 const postsCollection = client.db("loginDB").collection("posts");
 
+const verifyJWT = (req, res, next) => {
+  // console.log("verifying");
+  // console.log(req.headers.authorization);
+  const authorization = req.headers.authorization;
+  if (!authorization) {
+    return res.send({ error: true, message: "Invalid authorization" });
+  }
+
+  const token = authorization.split(" ")[1];
+  console.log(token);
+  jwt.verify(token, process.env.ACCESS_TOKEN, (err, decoded) => {
+    if (err) {
+      return res.send({ error: true, message: "Invalid authorization" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     client.connect();
 
+    // jwt
+
+    app.post("/jwt", (req, res) => {
+      const user = req.body;
+      console.log(user);
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN, {
+        expiresIn: "3h",
+      });
+
+      res.send({ token });
+    });
+
     app.post("/signup", async (req, res) => {
       const { name, email, password } = req.body;
-      const user = { name, email, password };
+
+      const existingUser = await usersCollection.findOne({ email: email });
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already exists" });
+      }
+      const saltRounds = 10; // Adjust as needed
+      const salt = await bcrypt.genSalt(saltRounds);
+      const hashedPassword = await bcrypt.hash(password, salt);
+      const user = { name, email, password: hashedPassword, salt: salt };
 
       const result = await usersCollection.insertOne(user);
       res.send(result);
@@ -53,11 +123,13 @@ async function run() {
 
     app.post("/login", async (req, res) => {
       const { email, password } = req.body;
+
       const loggedUser = await usersCollection.findOne({
         email: email,
-        password: password,
       });
-      if (loggedUser) {
+      const saltedPassword = loggedUser.salt + password;
+      const hashedPassword = await bcrypt.hash(password, loggedUser.salt);
+      if (hashedPassword === loggedUser.password) {
         res.json({ status: "OK" });
       } else {
         res.json({ status: "Invalid username or password" });
@@ -79,7 +151,7 @@ async function run() {
           return res.status(404).json({ message: "User not found" });
         }
 
-        const url = `https://login-server-six.vercel.app/reset/${userFinding?._id}`;
+        const url = `http://localhost:5000/reset/${userFinding?._id}`;
         console.log(url);
 
         var transporter = nodemailer.createTransport({
@@ -163,14 +235,43 @@ async function run() {
 
     app.post("/posts", async (req, res) => {
       const { text } = req.body;
+      const encryptedPost = encrypt(text);
       const post = {
-        text,
+        text: encryptedPost,
         likes: 0,
         comments: [],
       };
       const result = await postsCollection.insertOne(post);
       res.send(result);
     });
+
+    app.get("/allposts", verifyJWT, async (req, res) => {
+      // console.log(req.headers);
+      console.log(req.decoded);
+      if (!req.decoded.email) {
+        return res.send({ error: true });
+      }
+
+      const encryptedPosts = await postsCollection.find().toArray();
+
+      const decryptedPosts = encryptedPosts.map((post) => {
+        console.log(post.text);
+        return {
+          ...post,
+          text: decrypt(post.text),
+        };
+      });
+
+      res.send(decryptedPosts);
+    });
+
+    app.get("/singlepost/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await postsCollection.findOne(query);
+      res.send(result);
+    });
+
     app.put("/post/update/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -208,18 +309,6 @@ async function run() {
       const result = await postsCollection.updateOne(query, {
         $push: { comments: comment },
       });
-      res.send(result);
-    });
-
-    app.get("/allposts", async (req, res) => {
-      const result = await postsCollection.find().toArray();
-      res.send(result);
-    });
-
-    app.get("/singlepost/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await postsCollection.findOne(query);
       res.send(result);
     });
 
