@@ -1,40 +1,10 @@
 const express = require("express");
 const app = express();
 const cors = require("cors");
-const jwt = require("jsonwebtoken");
-require("dotenv").config();
-const bcrypt = require("bcrypt");
-const crypto = require("crypto");
+
 const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 5000;
-
-const encryptionAlgorithm = "aes-256-cbc";
-const encryptionKey = process.env.KEY; // Replace with a secure secret key
-const iv = crypto.randomBytes(16);
-
-function encrypt(text) {
-  const cipher = crypto.createCipheriv(
-    encryptionAlgorithm,
-    Buffer.from(encryptionKey),
-    iv
-  );
-  let encrypted = cipher.update(text, "utf8", "hex");
-  encrypted += cipher.final("hex");
-  return `${iv.toString("hex")}:${encrypted}`;
-}
-
-function decrypt(encryptedText) {
-  const [ivText, encryptedData] = encryptedText.split(":");
-  const decipher = crypto.createDecipheriv(
-    encryptionAlgorithm,
-    Buffer.from(encryptionKey),
-    Buffer.from(ivText, "hex")
-  );
-  let decrypted = decipher.update(encryptedData, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
-}
 
 const corsConfig = {
   origin: "*",
@@ -45,7 +15,17 @@ const corsConfig = {
 app.use(cors());
 app.options("", cors(corsConfig));
 app.use(express.json());
-// app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false }));
+// app.use((req, res, next) => {
+//   res.setHeader(
+//     "Access-Control-Allow-Origin",
+//     "https://monumental-lamington-a6a195.netlify.app"
+//   );
+//   res.setHeader("Access-Control-Allow-Methods", "POST"); // Allow POST requests
+//   res.setHeader("Access-Control-Allow-Headers", "Content-Type"); // Specify allowed headers
+//   // Other CORS headers and middleware setup as needed
+//   next();
+// });
 
 app.get("/", (req, res) => {
   res.send("welcome");
@@ -69,25 +49,6 @@ const client = new MongoClient(uri, {
 const usersCollection = client.db("loginDB").collection("users");
 const postsCollection = client.db("loginDB").collection("posts");
 
-const verifyJWT = (req, res, next) => {
-  // console.log("verifying");
-  // console.log(req.headers.authorization);
-  const authorization = req.headers.authorization;
-  if (!authorization) {
-    return res.send({ error: true, message: "Invalid authorization" });
-  }
-
-  const token = authorization.split(" ")[1];
-  console.log(token);
-  jwt.verify(token, process.env.ACCESS_TOKEN, (err, decoded) => {
-    if (err) {
-      return res.send({ error: true, message: "Invalid authorization" });
-    }
-    req.decoded = decoded;
-    next();
-  });
-};
-
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -95,27 +56,13 @@ async function run() {
 
     // jwt
 
-    app.post("/jwt", (req, res) => {
-      const user = req.body;
-      console.log(user);
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN, {
-        expiresIn: "3h",
-      });
-
-      res.send({ token });
-    });
-
     app.post("/signup", async (req, res) => {
       const { name, email, password } = req.body;
-
+      const user = { name, email, password };
       const existingUser = await usersCollection.findOne({ email: email });
       if (existingUser) {
-        return res.status(400).json({ message: "Username already exists" });
+        return res.status(400).json({ message: "User already Signed up" });
       }
-      const saltRounds = 10; // Adjust as needed
-      const salt = await bcrypt.genSalt(saltRounds);
-      const hashedPassword = await bcrypt.hash(password, salt);
-      const user = { name, email, password: hashedPassword, salt: salt };
 
       const result = await usersCollection.insertOne(user);
       res.send(result);
@@ -123,16 +70,17 @@ async function run() {
 
     app.post("/login", async (req, res) => {
       const { email, password } = req.body;
+      console.log(email, password);
 
       const loggedUser = await usersCollection.findOne({
         email: email,
+        password: password,
       });
-      const saltedPassword = loggedUser.salt + password;
-      const hashedPassword = await bcrypt.hash(password, loggedUser.salt);
-      if (hashedPassword === loggedUser.password) {
-        res.json({ status: "OK" });
+
+      if (loggedUser) {
+        return res.send({ status: "ok" });
       } else {
-        res.json({ status: "Invalid username or password" });
+        return res.send({ status: "Wrong email or password" });
       }
     });
 
@@ -144,50 +92,45 @@ async function run() {
     app.post("/reset", async (req, res) => {
       const { email } = req.body;
 
-      try {
-        const userFinding = await usersCollection.findOne({ email: email });
+      const userFinding = await usersCollection.findOne({ email: email });
 
-        if (!userFinding) {
-          return res.status(404).json({ message: "User not found" });
-        }
-
-        const url = `http://localhost:5000/reset/${userFinding?._id}`;
-        console.log(url);
-
-        var transporter = nodemailer.createTransport({
-          service: "gmail",
-          auth: {
-            user: "sharmintonni000@gmail.com",
-            pass: "dljwkqhvtprbdfzv",
-          },
-        });
-
-        var mailOptions = {
-          from: "sharmintonni000@gmail.com",
-          to: userFinding?.email,
-          subject: "Reset your password",
-          text: url,
-        };
-
-        transporter.sendMail(mailOptions, function (error, info) {
-          if (error) {
-            console.log(error);
-            return res.status(500).json({ message: "Email sending failed" });
-          } else {
-            console.log("Email sent: " + info.response);
-
-            // Forward the userFinding response to your frontend
-            res.json({ message: "Email sent successfully" });
-          }
-        });
-      } catch (error) {
-        console.log(error);
-        res.status(500).json({ message: "Internal server error" });
+      if (!userFinding) {
+        return res.status(404).json({ message: "User not found" });
       }
+
+      const url = `https://login-server-six.vercel.app/reset/${userFinding?._id}`;
+      console.log(url);
+
+      var transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: "sharmintonni000@gmail.com",
+          pass: "dljwkqhvtprbdfzv",
+        },
+      });
+
+      var mailOptions = {
+        from: "sharmintonni000@gmail.com",
+        to: userFinding?.email,
+        subject: "Reset your password",
+        text: url,
+      };
+
+      transporter.sendMail(mailOptions, function (error, info) {
+        if (error) {
+          console.log(error);
+          return res.status(500).json({ message: "Email sending failed" });
+        } else {
+          console.log("Email sent: " + info?.response);
+
+          // Forward the userFinding response to your frontend
+          return res.json({ message: "Email sent successfully" });
+        }
+      });
     });
 
     app.get("/reset/:id", async (req, res) => {
-      const { id } = req.params;
+      const id = req.params.id;
       //   console.log(id, token);
 
       const userFinding = await usersCollection.findOne({
@@ -203,7 +146,7 @@ async function run() {
     });
 
     app.post("/reset/:id", async (req, res) => {
-      const { id } = req.params;
+      const id = req.params.id;
       const { password } = req.body;
       const userFinding = await usersCollection.findOne({
         _id: new ObjectId(id),
@@ -212,32 +155,26 @@ async function run() {
       if (!userFinding) {
         return res.status(404).json({ message: "User not found" });
       }
-      //   const secret = token + userFinding.password;
-      try {
-        // const verify = jwt.verify(token, secret);
-        // const encryptedPassword = await bcrypt.hash(password, 10);
-        await usersCollection.updateOne(
-          {
-            _id: new ObjectId(id),
-          },
-          {
-            $set: {
-              password: password,
-            },
-          }
-        );
 
-        res.send({ status: "password updated" });
-      } catch (error) {
-        res.send({ status: "password cannot be updated" });
-      }
+      const result = await usersCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+        },
+        {
+          $set: {
+            password: password,
+          },
+        }
+      );
+
+      res.send({ status: "password updated" });
     });
 
     app.post("/posts", async (req, res) => {
       const { text } = req.body;
-      const encryptedPost = encrypt(text);
+
       const post = {
-        text: encryptedPost,
+        text,
         likes: 0,
         comments: [],
       };
@@ -245,30 +182,17 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/allposts", verifyJWT, async (req, res) => {
-      // console.log(req.headers);
-      console.log(req.decoded);
-      if (!req.decoded.email) {
-        return res.send({ error: true });
-      }
+    app.get("/allposts", async (req, res) => {
+      const posts = await postsCollection.find().toArray();
 
-      const encryptedPosts = await postsCollection.find().toArray();
-
-      const decryptedPosts = encryptedPosts.map((post) => {
-        console.log(post.text);
-        return {
-          ...post,
-          text: decrypt(post.text),
-        };
-      });
-
-      res.send(decryptedPosts);
+      res.send(posts);
     });
 
     app.get("/singlepost/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await postsCollection.findOne(query);
+
       res.send(result);
     });
 
